@@ -34,6 +34,23 @@ def test_fetch_prefixes_filters_by_region_scope_and_follows_pagination():
     assert session.get.call_args_list[0].kwargs["headers"]["Authorization"] == "Token secret"
 
 
+def test_fetch_prefixes_filters_by_optional_tag():
+    response = Mock()
+    response.json.return_value = {"results": [{"prefix": "192.0.2.0/24"}], "next": None}
+
+    with patch("netbox_prefix_exporter.requests.Session") as session_type:
+        session = session_type.return_value.__enter__.return_value
+        session.get.return_value = response
+
+        prefixes = fetch_prefixes("https://netbox.example.com", "secret", "geofeed")
+
+    assert prefixes == [{"prefix": "192.0.2.0/24"}]
+    assert session.get.call_args.kwargs["params"] == {
+        "scope_type": "dcim.region",
+        "tag": "geofeed",
+    }
+
+
 def test_fetch_regions_follows_pagination():
     first_page = Mock()
     first_page.json.return_value = {

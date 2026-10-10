@@ -57,8 +57,13 @@ Define the NetBox URL and API token in `.env`:
 ```dotenv
 NETBOX_URL=https://netbox.example.com
 NETBOX_TOKEN=your-token-value
+NETBOX_TAG=
 NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
 ```
+
+`NETBOX_TAG` is optional. Leave it empty to consider all Region-scoped
+prefixes, or set it to one NetBox tag slug to include only prefixes with that
+tag. The tag filter is applied together with the Region Scope filter.
 
 `NETBOX_PREFIX_BLOCKLIST` is optional. Enter comma-separated IP prefixes to
 exclude; the example lists RFC 1918 private IPv4 ranges and the IPv6
@@ -67,11 +72,13 @@ NetBox prefix, the exporter removes that address range and exports the
 remaining CIDR pieces with the original location. Leave the value empty to
 disable exclusions.
 
-The exporter fetches only prefixes whose Scope type is Region (`dcim.region`).
-Prefixes without a Region Scope are excluded. If a blacklisted prefix is
-contained within a less-specific NetBox prefix, the exporter splits the
-less-specific prefix into CIDR ranges that exclude the blocked addresses. Those
-remaining ranges retain the location of the less-specific prefix.
+The exporter fetches only prefixes whose Scope type is Region (`dcim.region`),
+and, if `NETBOX_TAG` is set, only those with the configured tag. The blacklist
+is then applied to the selected prefixes. Prefixes without a Region Scope or
+without the configured tag are excluded. If a blacklisted prefix is contained
+within a less-specific NetBox prefix, the exporter splits the less-specific
+prefix into CIDR ranges that exclude the blocked addresses. Those remaining
+ranges retain the location of the less-specific prefix.
 
 ## Run
 

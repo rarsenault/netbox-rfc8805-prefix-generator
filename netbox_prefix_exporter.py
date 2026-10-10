@@ -52,12 +52,20 @@ def fetch_results(
     return results
 
 
-def fetch_prefixes(base_url: str, token: str) -> list[dict[str, Any]]:
+def fetch_prefixes(
+    base_url: str,
+    token: str,
+    tag: str | None = None,
+) -> list[dict[str, Any]]:
+    params = {"scope_type": REGION_SCOPE_TYPE}
+    if tag:
+        params["tag"] = tag
+
     return fetch_results(
         base_url,
         token,
         "api/ipam/prefixes/",
-        {"scope_type": REGION_SCOPE_TYPE},
+        params,
     )
 
 
@@ -172,7 +180,8 @@ def main() -> int:
             for value in os.getenv("NETBOX_PREFIX_BLOCKLIST", "").split(",")
             if value.strip()
         ]
-        prefixes = fetch_prefixes(args.base_url, token)
+        tag = os.getenv("NETBOX_TAG", "").strip() or None
+        prefixes = fetch_prefixes(args.base_url, token, tag)
         regions = fetch_regions(args.base_url, token)
         generated_at = datetime.now(timezone.utc)
         exported_count = write_aggregated_geofeed(
