@@ -1,6 +1,6 @@
 # Netbox RFC8805 Prefix Generator
 
-Export Netbox IPAM prefixes to an RFC8805-compliant geofeed CSV file.
+Export Netbox IPAM prefixes to an [RFC8805](https://www.rfc-editor.org/rfc/rfc8805.txt)-compliant geofeed CSV file.
 
 ## Requirements
 
@@ -35,10 +35,10 @@ Regions
         └── Elmsdale
 ```
 
-Set each exported Prefix's **Scope** to its city Region. The exporter follows
-the Region's parent hierarchy to populate the corresponding geofeed fields.
-For example, set the Scope of `192.0.2.0/29` (in Charlottetown, Prince Edward
-Island, Canada) to the `Charlottetown` Region. If the Scope Region cannot be
+Within Netbox, set each relevant Prefix's **Scope** to its city Region. The exporter follows
+that city's parent hierarchy to populate the corresponding geofeed fields.
+
+Ex: Assume `192.0.2.0/29` is assigned to Charlottetown. Its Scope should be set to the `Charlottetown` Region. The script will derive the relevant provice/state and country codes. If the Scope Region cannot be
 resolved or a parent Region is missing, the corresponding location fields will
 be blank.
 
