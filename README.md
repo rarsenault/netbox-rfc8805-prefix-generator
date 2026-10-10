@@ -17,7 +17,8 @@ Create NetBox Regions in a three-level hierarchy: country, province/state, then
 city. Use the country's two-letter ISO 3166-1 alpha-2 code as the country
 Region name; that name is exported as the RFC 8805 `alpha2code`. Use the
 province/state's ISO 3166-2 subdivision code as its Region name (for example,
-`CA-ON` for Ontario or `CA-MB` for Manitoba); it is exported as `region`.
+`CA-ON` for Ontario or `CA-PE` for Prince Edward Island); it is exported as
+`region`.
 The city Region name is exported as `city`. Set each exported Prefix's
 **Scope** to its city Region.
 
@@ -27,11 +28,11 @@ The following is an example, using Canada as a reference country:
 Regions
 └── CA
     └── CA-ON
-    │       ├── Toronto
-    │       └── Ottawa
-    └── CA-MB
-            ├── Winnipeg
-            └── Brandon
+    │       ├── Ottawa
+    │       └── Toronto
+    └── CA-PE
+            ├── Charlottetown
+            └── Elmsdale
 ```
 
 Prefixes without a Region Scope are excluded by the API filter. A Region Scope
