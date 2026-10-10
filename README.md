@@ -1,0 +1,111 @@
+# Netbox RFC8805 Prefix Generator
+
+Export IPAM prefixes with a Region Scope from NetBox to one aggregated RFC 8805
+geofeed CSV file. The exporter is read-only: it fetches Region-scoped prefixes
+and Regions, then writes the CSV locally.
+
+## Requirements
+
+- Python 3.10 or later
+- NetBox 4.2 or later
+- A NetBox API token with permission to view IPAM prefixes and DCIM Regions
+- Python packages listed in `requirements.txt`
+- Use the [ISO Online Browsing Platform](https://www.iso.org/obp/ui/) as the
+  source for country and subdivision codes.
+
+Create NetBox Regions in a three-level hierarchy: country, province/state, then
+city. Use the country's two-letter ISO 3166-1 alpha-2 code as the country
+Region name; that name is exported as the RFC 8805 `alpha2code`. Use the
+province/state's ISO 3166-2 subdivision code as its Region name (for example,
+`CA-ON` for Ontario or `CA-MB` for Manitoba); it is exported as `region`.
+The city Region name is exported as `city`. Set each exported Prefix's
+**Scope** to its city Region.
+
+The following is an example, using Canada as a reference country:
+
+```text
+Regions
+└── CA
+    └── CA-ON
+        │   ├── Toronto
+        │   └── Ottawa
+    └── CA-MB
+        ├── Winnipeg
+        └── Brandon
+```
+
+Prefixes without a Region Scope are excluded by the API filter. A Region Scope
+that cannot be resolved, or a missing parent Region, results in blank location
+fields. Postal code is currently blank.
+
+## Location data
+
+Set each relevant IPAM prefix's **Scope** value to its city-level Region. The
+exporter uses the Scope ID and Region hierarchy to get the city, province/state,
+and country.
+
+After exporting, open `geofeed-aggregated.csv` in a text editor or spreadsheet
+and check the `alpha2code`, `region`, and `city` columns for blank values or
+locations that do not match the expected prefix location. Blank values usually
+mean the Scope Region or one of its parent Regions is missing or cannot be
+resolved. Correct the Region hierarchy or the Prefix's Scope in NetBox, run the
+exporter again, and review the updated CSV. Prefixes without a Region Scope are
+excluded by the API filter and will not appear in the CSV.
+
+## Setup
+
+Create and activate a virtual environment, then install the required packages:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Define the NetBox URL and API token in `.env`:
+
+```dotenv
+NETBOX_URL=https://netbox.example.com
+NETBOX_TOKEN=your-token-value
+```
+
+The exporter fetches only prefixes whose Scope type is Region (`dcim.region`).
+Prefixes without a Region Scope are excluded by NetBox's API filter.
+
+## Run
+
+Call ```python3 ./netbox_prefix_exporter.py```.
+
+By default, this writes `geofeed-aggregated.csv` in the current directory.
+Use `--output` to choose a different path, ex:
+
+```./netbox_prefix_exporter.py --output ./foo/bar/geofeed-aggregated.csv```
+
+The CSV begins with a generated-time comment and a field-definition comment,
+followed by aggregated rows in this format:
+
+The sample below uses `192.0.2.0/24`, an RFC 6890 documentation prefix.
+
+```text
+# Aggregated RFC8805 geofeed generated August 30 2024 - 00:18:56 (Eastern Daylight Time)
+# ip_prefix,alpha2code,region,city,postal_code
+192.0.2.0/24,CA,CA-ON,Toronto,
+```
+
+Adjacent IPv4 or IPv6 networks are combined only when their country, region,
+and city fields are identical. Networks with different locations are not
+merged.
+
+## Suggestions
+
+Before publishing the feed for external parties, validate the generated CSV
+with [geofeed-validator](https://github.com/massimocandela/geofeed-validator/releases/).
+Download the release binary for your operating system and run it against the
+output file. For example, on Linux:
+
+```sh
+./geofeed-validator-linux-x64 -f geofeed-aggregated.csv
+```
+
+Validation can catch formatting and location-code errors, but the user should review the
+reported locations against expected NetBox Region data before publishing.
