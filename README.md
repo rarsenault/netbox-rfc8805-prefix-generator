@@ -62,8 +62,8 @@ NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
 ```
 
 `NETBOX_TAG` is optional. Leave it empty to consider all Region-scoped
-prefixes, or set it to one NetBox tag slug to include only prefixes with that
-tag. The tag filter is applied together with the Region Scope filter.
+prefixes, or set it to one NetBox tag slug to include only Region-scoped prefixes with that
+tag.
 
 `NETBOX_PREFIX_BLOCKLIST` is optional. Enter comma-separated IP prefixes to
 exclude; the example lists RFC 1918 private IPv4 ranges and the IPv6
