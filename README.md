@@ -1,8 +1,7 @@
 # Netbox RFC8805 Prefix Generator
 
-Export IPAM prefixes with a Region Scope from NetBox to one aggregated RFC 8805
-geofeed CSV file. The exporter is read-only: it fetches Region-scoped prefixes
-and Regions, then writes the CSV locally.
+Export IPAM prefixes with a Region Scope from NetBox to an RFC8805-compliant
+geofeed CSV file.
 
 ## Requirements
 
@@ -35,23 +34,15 @@ Regions
             └── Elmsdale
 ```
 
-Prefixes without a Region Scope are excluded by the API filter. A Region Scope
+A Region Scope
 that cannot be resolved, or a missing parent Region, results in blank location
-fields. Postal code is currently blank.
+fields. Postal code is left blank.
 
 ## Location data
 
 Set each relevant IPAM prefix's **Scope** value to its city-level Region. The
 exporter uses the Scope ID and Region hierarchy to get the city, province/state,
 and country.
-
-After exporting, open `geofeed-aggregated.csv` in a text editor or spreadsheet
-and check the `alpha2code`, `region`, and `city` columns for blank values or
-locations that do not match the expected prefix location. Blank values usually
-mean the Scope Region or one of its parent Regions is missing or cannot be
-resolved. Correct the Region hierarchy or the Prefix's Scope in NetBox, run the
-exporter again, and review the updated CSV. Prefixes without a Region Scope are
-excluded by the API filter and will not appear in the CSV.
 
 ## Setup
 
@@ -121,3 +112,10 @@ output file. For example, on Linux:
 
 Validation can catch formatting and location-code errors, but the user should review the
 reported locations against expected NetBox Region data before publishing.
+
+Manually validate the contents of `geofeed-aggregated.csv` in and check the `alpha2code`, `region`, and `city` columns for blank values or
+locations that do not match the expected prefix location. Blank values usually
+mean the Scope Region or one of its parent Regions is missing or cannot be
+resolved. Correct the Region hierarchy or the Prefix's Scope in NetBox, run the
+exporter again, and review the updated CSV. Prefixes without a Region Scope are
+excluded by the Netbox API filter and will not appear in the CSV.
