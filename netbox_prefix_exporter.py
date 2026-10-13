@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import sys
 from typing import Any
-from urllib.parse import urljoin
 
 import requests
 from dotenv import load_dotenv
@@ -15,7 +14,13 @@ from urllib3.util.retry import Retry
 
 
 REGION_SCOPE_TYPE = "dcim.region"
+
+# Short names for types that appear throughout the script.
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+Record = dict[str, Any]  # one JSON object returned by NetBox
+RegionIndex = dict[int, Record]  # every Region, keyed by its NetBox ID
+Location = tuple[str, str, str]  # (country, region, city)
+LocatedNetwork = tuple[IPNetwork, Location]
 
 # Largest number of per-prefix warnings to print. A bad Region assignment can
 # affect hundreds of prefixes, and a wall of warnings is easy to ignore. The
@@ -32,26 +37,16 @@ RETRY_POLICY = Retry(
 )
 
 
-def _write_geofeed_header(csv_file: Any, purpose: str, generated_at: datetime) -> csv.writer:
-    # RFC 3339 timestamp in UTC, e.g. 2024-08-30T04:18:56+00:00
-    timestamp = generated_at.astimezone(timezone.utc).isoformat(timespec="seconds")
-    csv_file.write(
-        f"# {purpose} generated {timestamp}\n"
-        "# ip_prefix,alpha2code,region,city,postal_code\n"
-    )
-    return csv.writer(csv_file, lineterminator="\n")
-
-
 def fetch_results(
     base_url: str,
     token: str,
     api_path: str,
     params: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[Record]:
     """Fetch every page of a NetBox list endpoint (read-only GET requests)."""
-    endpoint = urljoin(base_url.rstrip("/") + "/", api_path)
+    endpoint = f"{base_url.rstrip('/')}/{api_path}"
     headers = {"Authorization": f"Token {token}", "Accept": "application/json"}
-    results: list[dict[str, Any]] = []
+    results: list[Record] = []
 
     with requests.Session() as session:
         adapter = HTTPAdapter(max_retries=RETRY_POLICY)
@@ -77,7 +72,7 @@ def fetch_prefixes(
     base_url: str,
     token: str,
     tag: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[Record]:
     params = {"scope_type": REGION_SCOPE_TYPE}
     if tag:
         params["tag"] = tag
@@ -90,8 +85,10 @@ def fetch_prefixes(
     )
 
 
-def fetch_regions(base_url: str, token: str) -> list[dict[str, Any]]:
-    return fetch_results(base_url, token, "api/dcim/regions/")
+def fetch_regions(base_url: str, token: str) -> RegionIndex:
+    """Fetch every Region and return them keyed by NetBox ID for quick lookup."""
+    regions = fetch_results(base_url, token, "api/dcim/regions/")
+    return {region["id"]: region for region in regions}
 
 
 def parse_blocklist(text: str) -> list[IPNetwork]:
@@ -110,28 +107,18 @@ def parse_blocklist(text: str) -> list[IPNetwork]:
     return networks
 
 
-def _region_index(regions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {str(region["id"]): region for region in regions if region.get("id") is not None}
-
-
-def _parent_region(
-    region: dict[str, Any] | None,
-    regions_by_id: dict[str, dict[str, Any]],
-) -> dict[str, Any] | None:
+def _parent_region(region: Record | None, regions_by_id: RegionIndex) -> Record | None:
     # NetBox returns "parent" as a nested object with an "id", or null.
     parent = region.get("parent") if region else None
-    return regions_by_id.get(str(parent["id"])) if parent else None
+    return regions_by_id.get(parent["id"]) if parent else None
 
 
-def _geofeed_location(
-    prefix: dict[str, Any],
-    regions_by_id: dict[str, dict[str, Any]],
-) -> tuple[str, str, str]:
+def _geofeed_location(prefix: Record, regions_by_id: RegionIndex) -> Location:
     """Return (country, region, city) for a prefix, using "" for anything missing."""
     if prefix.get("scope_type") != REGION_SCOPE_TYPE or prefix.get("scope_id") is None:
         return "", "", ""
 
-    city = regions_by_id.get(str(prefix["scope_id"]))
+    city = regions_by_id.get(prefix["scope_id"])
     if city is None:
         return "", "", ""
 
@@ -146,20 +133,22 @@ def _geofeed_location(
 
 
 def split_by_location(
-    prefixes: list[dict[str, Any]],
-    regions: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Separate prefixes into (fully located, unresolved).
+    prefixes: list[Record],
+    regions_by_id: RegionIndex,
+) -> tuple[list[LocatedNetwork], list[Record]]:
+    """Separate prefixes into (located networks, unresolved prefixes).
 
     A prefix is unresolved when its country, region, or city cannot be
     determined, for example because a parent Region is missing in NetBox.
+    Each located network is paired with its (country, region, city).
     """
-    regions_by_id = _region_index(regions)
-    located: list[dict[str, Any]] = []
-    unresolved: list[dict[str, Any]] = []
+    located: list[LocatedNetwork] = []
+    unresolved: list[Record] = []
     for prefix in prefixes:
-        if all(_geofeed_location(prefix, regions_by_id)):
-            located.append(prefix)
+        location = _geofeed_location(prefix, regions_by_id)
+        if all(location):
+            network = ipaddress.ip_network(prefix["prefix"], strict=False)
+            located.append((network, location))
         else:
             unresolved.append(prefix)
     return located, unresolved
@@ -186,22 +175,18 @@ def _subtract_blacklist(network: IPNetwork, blacklist: list[IPNetwork]) -> list[
 
 
 def write_aggregated_geofeed(
-    prefixes: list[dict[str, Any]],
-    regions: list[dict[str, Any]],
+    located: list[LocatedNetwork],
     output_path: Path,
     generated_at: datetime | None = None,
     blacklist: list[IPNetwork] | None = None,
 ) -> int:
-    regions_by_id = _region_index(regions)
     generated_at = generated_at or datetime.now(timezone.utc)
     blacklist = blacklist or []
 
     # The IP version is part of the key because ipaddress.collapse_addresses()
     # raises TypeError if it is given a mix of IPv4 and IPv6 networks.
-    networks_by_location: dict[tuple[str, str, str, int], list[Any]] = {}
-    for prefix in prefixes:
-        location = _geofeed_location(prefix, regions_by_id)
-        network = ipaddress.ip_network(prefix["prefix"], strict=False)
+    networks_by_location: dict[tuple[str, str, str, int], list[IPNetwork]] = {}
+    for network, location in located:
         key = (*location, network.version)
         networks_by_location.setdefault(key, []).extend(_subtract_blacklist(network, blacklist))
 
@@ -211,30 +196,30 @@ def write_aggregated_geofeed(
         for network in ipaddress.collapse_addresses(networks)
     ]
     rows.sort(key=lambda row: (row[0].version, int(row[0].network_address)))
+
+    # RFC 3339 timestamp in UTC, e.g. 2024-08-30T04:18:56+00:00
+    timestamp = generated_at.astimezone(timezone.utc).isoformat(timespec="seconds")
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = _write_geofeed_header(
-            csv_file,
-            "Aggregated RFC8805 geofeed",
-            generated_at,
+        csv_file.write(
+            f"# Aggregated RFC8805 geofeed generated {timestamp}\n"
+            "# ip_prefix,alpha2code,region,city,postal_code\n"
         )
+        writer = csv.writer(csv_file, lineterminator="\n")
         for network, country, province, city in rows:
             writer.writerow([str(network), country, province, city, ""])
     return len(rows)
 
 
-def _describe_scope(prefix: dict[str, Any], regions_by_id: dict[str, dict[str, Any]]) -> str:
+def _describe_scope(prefix: Record, regions_by_id: RegionIndex) -> str:
     """Return e.g. "scope id 2 (CA-AB)", or just "scope id 2" if the Region is unknown."""
     scope_id = prefix.get("scope_id")
-    region = regions_by_id.get(str(scope_id)) if scope_id is not None else None
+    region = regions_by_id.get(scope_id)
     if region and region.get("name"):
         return f"scope id {scope_id} ({region['name']})"
     return f"scope id {scope_id}"
 
 
-def _report_unresolved(
-    unresolved: list[dict[str, Any]],
-    regions: list[dict[str, Any]],
-) -> None:
+def _report_unresolved(unresolved: list[Record], regions_by_id: RegionIndex) -> None:
     """Report skipped prefixes: warnings (up to a limit), then a count and advice.
 
     Everything is printed to stderr, in one block, so the messages stay together.
@@ -242,7 +227,6 @@ def _report_unresolved(
     if not unresolved:
         return
 
-    regions_by_id = _region_index(regions)
     for prefix in unresolved[:MAX_LISTED_WARNINGS]:
         scope = _describe_scope(prefix, regions_by_id)
         print(
@@ -265,7 +249,7 @@ def _report_unresolved(
     )
     print(
         "Prefix Scope must be a city Region whose parent is a province/state and "
-        "whose grandparent is a country -- see \"Unresolved locations\" in README.md",
+        'whose grandparent is a country -- see "Unresolved locations" in README.md',
         file=sys.stderr,
     )
 
@@ -279,7 +263,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("geofeed-aggregated.csv"),
+        default=Path("geofeed.csv"),
         help="Aggregated geofeed output path",
     )
     args = parser.parse_args()
@@ -298,21 +282,15 @@ def main() -> int:
 
     try:
         prefixes = fetch_prefixes(args.base_url, token, tag)
-        regions = fetch_regions(args.base_url, token)
-        located, unresolved = split_by_location(prefixes, regions)
-        exported_count = write_aggregated_geofeed(
-            located,
-            regions,
-            args.output,
-            datetime.now(timezone.utc),
-            blacklist,
-        )
+        regions_by_id = fetch_regions(args.base_url, token)
+        located, unresolved = split_by_location(prefixes, regions_by_id)
+        exported_count = write_aggregated_geofeed(located, args.output, blacklist=blacklist)
     except requests.RequestException as error:
         parser.error(f"NetBox request failed: {error}")
     except (KeyError, ValueError) as error:
         parser.error(f"Could not create geofeed: {error}")
     else:
-        _report_unresolved(unresolved, regions)
+        _report_unresolved(unresolved, regions_by_id)
         print(
             f"Exported {exported_count} aggregated prefixes "
             f"from {len(located)} source prefixes to {args.output}"

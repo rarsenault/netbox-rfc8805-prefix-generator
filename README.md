@@ -63,7 +63,7 @@ Define the NetBox URL and API token in `.env`:
 NETBOX_URL=https://netbox.example.com
 NETBOX_TOKEN=your-token-value
 NETBOX_TAG=
-NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
+NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,100.64.0.0/10,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
 ```
 
 `NETBOX_TAG` is optional. Leave it empty to consider all Region-scoped
@@ -131,7 +131,7 @@ of advice:
 Warning: skipped 198.51.100.0/24 with scope id 12 (CA-PE): its Region, or a parent Region, could not be resolved.
 Skipped 1 prefixes with unresolved locations.
 Prefix Scope must be a city Region whose parent is a province/state and whose grandparent is a country -- see "Unresolved locations" in README.md
-Exported 41 aggregated prefixes from 57 source prefixes to geofeed-aggregated.csv
+Exported 41 aggregated prefixes from 57 source prefixes to geofeed.csv
 ```
 
 Each warning shows the prefix, the NetBox ID of its Scope Region, and that
@@ -178,12 +178,12 @@ Download the release binary for your operating system and run it against the
 output file. For example, on Linux:
 
 ```sh
-./geofeed-validator-linux-x64 -f geofeed-aggregated.csv
+./geofeed-validator-linux-x64 -f geofeed.csv
 ```
 
 Validation can catch formatting and location-code errors, but it does not
 confirm that locations are accurate. Before publishing, review the
-`alpha2code`, `region`, and `city` columns in `geofeed-aggregated.csv` for
+`alpha2code`, `region`, and `city` columns in `geofeed.csv` for
 locations that do not match the expected prefix location, and review any
 warnings about skipped prefixes. Correct the Region hierarchy or Prefix Scope
 in NetBox, run the exporter again, and review the updated CSV.

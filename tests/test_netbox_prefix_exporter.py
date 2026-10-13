@@ -28,8 +28,22 @@ REGIONS = [
 ]
 
 
+def by_id(regions):
+    """Index Regions by ID, the same shape fetch_regions() returns."""
+    return {region["id"]: region for region in regions}
+
+
+REGIONS_BY_ID = by_id(REGIONS)
+
+
 def region_prefix(prefix, scope_id):
     return {"prefix": prefix, "scope_type": "dcim.region", "scope_id": scope_id}
+
+
+def write_feed(prefixes, output, regions=REGIONS, **kwargs):
+    """Locate the prefixes, then write them, as main() does."""
+    located, _ = split_by_location(prefixes, by_id(regions))
+    return write_aggregated_geofeed(located, output, **kwargs)
 
 
 # --- Fetching -------------------------------------------------------------
@@ -54,6 +68,7 @@ def test_fetch_prefixes_filters_by_region_scope_and_follows_pagination():
         prefixes = fetch_prefixes("https://netbox.example.com", "secret")
 
     assert [item["prefix"] for item in prefixes] == ["192.0.2.0/24", "198.51.100.0/24"]
+    assert session.get.call_args_list[0].args[0] == "https://netbox.example.com/api/ipam/prefixes/"
     assert session.get.call_args_list[0].kwargs["params"] == {"scope_type": "dcim.region"}
     assert session.get.call_args_list[1].kwargs["params"] is None
     assert session.get.call_args_list[0].kwargs["headers"]["Authorization"] == "Token secret"
@@ -80,7 +95,7 @@ def test_fetch_prefixes_filters_by_optional_tag():
     }
 
 
-def test_fetch_regions_follows_pagination():
+def test_fetch_regions_follows_pagination_and_indexes_by_id():
     first_page = Mock()
     first_page.json.return_value = {
         "results": [{"id": 1, "name": "CA"}],
@@ -95,8 +110,21 @@ def test_fetch_regions_follows_pagination():
 
         regions = fetch_regions("https://netbox.example.com", "secret")
 
-    assert [region["name"] for region in regions] == ["CA", "CA-ON"]
+    assert regions == {1: {"id": 1, "name": "CA"}, 2: {"id": 2, "name": "CA-ON"}}
     assert session.get.call_args_list[1].kwargs["params"] is None
+
+
+def test_fetch_results_tolerates_trailing_slash_on_base_url():
+    response = Mock()
+    response.json.return_value = {"results": [], "next": None}
+
+    with patch("netbox_prefix_exporter.requests.Session") as session_type:
+        session = session_type.return_value.__enter__.return_value
+        session.get.return_value = response
+
+        fetch_regions("https://netbox.example.com/", "secret")
+
+    assert session.get.call_args.args[0] == "https://netbox.example.com/api/dcim/regions/"
 
 
 def test_fetch_results_retries_transient_errors_and_only_uses_get():
@@ -149,7 +177,7 @@ def test_parse_blocklist_names_the_bad_entry():
 # --- Location resolution --------------------------------------------------
 
 
-def test_split_by_location_separates_unresolved_prefixes():
+def test_split_by_location_pairs_networks_with_locations_and_separates_unresolved():
     regions = REGIONS + [
         {"id": 5, "name": "Orphan", "parent": None},  # no province or country
         {"id": 6, "name": "CA-PE", "parent": {"id": 1}},
@@ -165,10 +193,13 @@ def test_split_by_location_separates_unresolved_prefixes():
 
     located, unresolved = split_by_location(
         [good, orphan, unknown_region, no_scope, wrong_scope_type, resolved_other],
-        regions,
+        by_id(regions),
     )
 
-    assert located == [good, resolved_other]
+    assert located == [
+        (ipaddress.ip_network("192.0.2.0/24"), ("CA", "CA-ON", "Toronto")),
+        (ipaddress.ip_network("203.0.116.0/24"), ("CA", "CA-PE", "Charlottetown")),
+    ]
     assert unresolved == [orphan, unknown_region, no_scope, wrong_scope_type]
 
 
@@ -179,7 +210,16 @@ def test_split_by_location_flags_city_whose_province_has_no_country():
     ]
     prefix = region_prefix("192.0.2.0/24", 3)
 
-    located, unresolved = split_by_location([prefix], regions)
+    located, unresolved = split_by_location([prefix], by_id(regions))
+
+    assert located == []
+    assert unresolved == [prefix]
+
+
+def test_split_by_location_flags_province_scope_used_instead_of_city():
+    prefix = region_prefix("192.0.2.0/24", 2)  # CA-ON is a province, not a city
+
+    located, unresolved = split_by_location([prefix], REGIONS_BY_ID)
 
     assert located == []
     assert unresolved == [prefix]
@@ -221,9 +261,9 @@ def test_subtract_blacklist_handles_multiple_overlapping_entries():
 
 
 def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
-    output = tmp_path / "geofeed-aggregated.csv"
+    output = tmp_path / "geofeed.csv"
     generated_at = datetime(2024, 8, 30, 4, 18, 56, tzinfo=timezone.utc)
-    exported_count = write_aggregated_geofeed(
+    exported_count = write_feed(
         [
             region_prefix("192.0.2.0/25", 3),
             region_prefix("192.0.2.128/25", 3),
@@ -231,9 +271,8 @@ def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
             region_prefix("2001:db8::/33", 3),
             region_prefix("2001:db8:8000::/33", 3),
         ],
-        REGIONS,
         output,
-        generated_at,
+        generated_at=generated_at,
     )
 
     lines = output.read_text(encoding="utf-8").splitlines()
@@ -249,28 +288,38 @@ def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
         ["2001:db8::/32", "CA", "CA-ON", "Toronto", ""],
     ]
     assert exported_count == len(rows) == 3
-    assert not (tmp_path / "geofeed.csv").exists()
+    assert not (tmp_path / "geofeed-extra.csv").exists()
 
 
 def test_write_aggregated_geofeed_header_converts_timestamp_to_utc(tmp_path):
-    output = tmp_path / "geofeed-aggregated.csv"
+    output = tmp_path / "geofeed.csv"
     eastern = timezone(timedelta(hours=-5))
     generated_at = datetime(2024, 1, 15, 0, 30, 0, tzinfo=eastern)
 
-    write_aggregated_geofeed([region_prefix("192.0.2.0/24", 3)], REGIONS, output, generated_at)
+    write_feed([region_prefix("192.0.2.0/24", 3)], output, generated_at=generated_at)
 
     first_line = output.read_text(encoding="utf-8").splitlines()[0]
     assert first_line == "# Aggregated RFC8805 geofeed generated 2024-01-15T05:30:00+00:00"
 
 
+def test_write_aggregated_geofeed_defaults_to_current_time(tmp_path):
+    output = tmp_path / "geofeed.csv"
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+
+    write_feed([region_prefix("192.0.2.0/24", 3)], output)
+
+    first_line = output.read_text(encoding="utf-8").splitlines()[0]
+    stamp = datetime.fromisoformat(first_line.rsplit(" ", 1)[1])
+    assert before <= stamp <= datetime.now(timezone.utc)
+
+
 def test_write_aggregated_geofeed_keeps_ipv4_and_ipv6_separate_in_one_location(tmp_path):
-    output = tmp_path / "geofeed-aggregated.csv"
+    output = tmp_path / "geofeed.csv"
 
     # Both prefixes share the same city; mixing versions in collapse_addresses
     # would raise TypeError if they were not grouped separately.
-    exported_count = write_aggregated_geofeed(
+    exported_count = write_feed(
         [region_prefix("2001:db8::/32", 3), region_prefix("192.0.2.0/24", 3)],
-        REGIONS,
         output,
     )
 
@@ -283,17 +332,16 @@ def test_write_aggregated_geofeed_keeps_ipv4_and_ipv6_separate_in_one_location(t
 
 
 def test_write_aggregated_geofeed_subtracts_blacklisted_address_ranges(tmp_path):
-    output = tmp_path / "geofeed-aggregated.csv"
-    regions = REGIONS[:3]
+    output = tmp_path / "geofeed.csv"
 
-    exported_count = write_aggregated_geofeed(
+    exported_count = write_feed(
         [
             region_prefix("192.0.2.0/24", 3),
             region_prefix("198.51.100.0/24", 3),
             region_prefix("2001:db8::/32", 3),
         ],
-        regions,
         output,
+        regions=REGIONS[:3],
         blacklist=[
             ipaddress.ip_network("192.0.2.64/26"),
             ipaddress.ip_network("198.51.100.0/24"),
@@ -309,6 +357,30 @@ def test_write_aggregated_geofeed_subtracts_blacklisted_address_ranges(tmp_path)
         ["2001:db8:8000::/33", "CA", "CA-ON", "Toronto", ""],
     ]
     assert exported_count == len(rows) == 3
+
+
+# --- Reporting ------------------------------------------------------------
+
+
+def test_report_unresolved_caps_listed_warnings_but_reports_true_total(capsys):
+    unresolved = [region_prefix(f"10.0.{number}.0/24", 999) for number in range(25)]
+
+    _report_unresolved(unresolved, REGIONS_BY_ID)
+
+    err = capsys.readouterr().err
+    assert err.count("Warning: skipped") == 20
+    assert "10.0.19.0/24" in err
+    assert "10.0.20.0/24" not in err
+    assert "... and 5 more skipped prefixes not listed here." in err
+    assert "Skipped 25 prefixes with unresolved locations." in err
+    assert err.count("Prefix Scope must be a city Region") == 1
+
+
+def test_report_unresolved_prints_nothing_when_nothing_was_skipped(capsys):
+    _report_unresolved([], REGIONS_BY_ID)
+
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
 
 
 # --- main() ---------------------------------------------------------------
@@ -335,7 +407,7 @@ def test_main_exports_resolved_prefixes_and_warns_about_unresolved(cli, capsys):
         region_prefix("203.0.113.0/24", 2),  # scoped to a province, not a city
     ]
     with patch.object(netbox_prefix_exporter, "fetch_prefixes", return_value=prefixes), \
-            patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS):
+            patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS_BY_ID):
         assert main() == 0
 
     rows = list(csv.reader(cli.read_text(encoding="utf-8").splitlines()[2:]))
@@ -354,33 +426,12 @@ def test_main_exports_resolved_prefixes_and_warns_about_unresolved(cli, capsys):
     assert "Skipped" not in captured.out
 
 
-def test_report_unresolved_caps_listed_warnings_but_reports_true_total(capsys):
-    unresolved = [region_prefix(f"10.0.{number}.0/24", 999) for number in range(25)]
-
-    _report_unresolved(unresolved, REGIONS)
-
-    err = capsys.readouterr().err
-    assert err.count("Warning: skipped") == 20
-    assert "10.0.19.0/24" in err
-    assert "10.0.20.0/24" not in err
-    assert "... and 5 more skipped prefixes not listed here." in err
-    assert "Skipped 25 prefixes with unresolved locations." in err
-    assert err.count("Prefix Scope must be a city Region") == 1
-
-
-def test_report_unresolved_prints_nothing_when_nothing_was_skipped(capsys):
-    _report_unresolved([], REGIONS)
-
-    captured = capsys.readouterr()
-    assert captured.out == "" and captured.err == ""
-
-
 def test_main_prints_no_warnings_or_advice_when_everything_resolves(cli, capsys):
     with patch.object(
         netbox_prefix_exporter,
         "fetch_prefixes",
         return_value=[region_prefix("192.0.2.0/24", 3)],
-    ), patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS):
+    ), patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS_BY_ID):
         assert main() == 0
 
     captured = capsys.readouterr()
@@ -396,12 +447,31 @@ def test_main_passes_tag_and_blocklist_from_environment(cli, monkeypatch):
         netbox_prefix_exporter,
         "fetch_prefixes",
         return_value=[region_prefix("192.0.2.0/24", 3)],
-    ) as fetch, patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS):
+    ) as fetch, patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS_BY_ID):
         assert main() == 0
 
     fetch.assert_called_once_with("https://netbox.example.com", "secret", "geofeed")
     rows = list(csv.reader(cli.read_text(encoding="utf-8").splitlines()[2:]))
     assert rows == [["192.0.2.128/25", "CA", "CA-ON", "Toronto", ""]]
+
+
+def test_main_writes_geofeed_csv_by_default(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(netbox_prefix_exporter, "load_dotenv", lambda: None)
+    monkeypatch.setenv("NETBOX_URL", "https://netbox.example.com")
+    monkeypatch.setenv("NETBOX_TOKEN", "secret")
+    monkeypatch.delenv("NETBOX_TAG", raising=False)
+    monkeypatch.delenv("NETBOX_PREFIX_BLOCKLIST", raising=False)
+    monkeypatch.setattr(sys, "argv", ["netbox_prefix_exporter.py"])
+
+    with patch.object(
+        netbox_prefix_exporter,
+        "fetch_prefixes",
+        return_value=[region_prefix("192.0.2.0/24", 3)],
+    ), patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS_BY_ID):
+        assert main() == 0
+
+    assert (tmp_path / "geofeed.csv").exists()
 
 
 def test_main_reports_bad_blocklist_entry_before_contacting_netbox(cli, monkeypatch, capsys):
