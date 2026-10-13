@@ -70,9 +70,11 @@ NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
 prefixes, or set it to one NetBox tag slug to include only Region-scoped prefixes with that
 tag.
 
+🚨Use of this tag is very disruptive.🚨 Ensure all desired prefixes are correctly tagged, or they will no longer be included in the geofeed.
+
 `NETBOX_PREFIX_BLOCKLIST` is optional. Enter comma-separated IP prefixes to
-exclude; the example lists RFC 1918 private IPv4 ranges and the IPv6
-documentation range from RFC 3849. If a blocklist overlaps only part of a
+exclude; the example lists RFC 1918 private IPv4 ranges, RFC 6598 shared-address block, and the RFC 3849 IPv6
+documentation range. If a blocklist overlaps only part of a
 NetBox prefix, the exporter removes that address range and exports the
 remaining CIDR pieces with the original location. Leave the value empty to
 disable exclusions.
@@ -98,10 +100,10 @@ download.
 
 Call ```python3 ./netbox_prefix_exporter.py```.
 
-By default, this writes `geofeed-aggregated.csv` in the current directory.
+By default, this writes `geofeed.csv` in the current directory.
 Use `--output` to choose a different path, ex:
 
-```./netbox_prefix_exporter.py --output ./foo/bar/geofeed-aggregated.csv```
+```./netbox_prefix_exporter.py --output ./foo/bar/my_feed.csv```
 
 The CSV begins with a generated-time comment and a field-definition comment,
 followed by aggregated rows. Example output (timestamp shown for illustration):
