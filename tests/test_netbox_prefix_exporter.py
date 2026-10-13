@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import sys
 from unittest.mock import Mock, patch
@@ -9,6 +9,7 @@ import requests
 
 import netbox_prefix_exporter
 from netbox_prefix_exporter import (
+    _report_unresolved,
     _subtract_blacklist,
     fetch_prefixes,
     fetch_regions,
@@ -239,7 +240,7 @@ def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
     rows = list(csv.reader(lines[2:]))
 
     assert lines[:2] == [
-        "# Aggregated RFC8805 geofeed generated August 30 2024 - 00:18:56 (Eastern Daylight Time)",
+        "# Aggregated RFC8805 geofeed generated 2024-08-30T04:18:56+00:00",
         "# ip_prefix,alpha2code,region,city,postal_code",
     ]
     assert rows == [
@@ -251,17 +252,15 @@ def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
     assert not (tmp_path / "geofeed.csv").exists()
 
 
-def test_write_aggregated_geofeed_uses_standard_time_header_in_winter(tmp_path):
+def test_write_aggregated_geofeed_header_converts_timestamp_to_utc(tmp_path):
     output = tmp_path / "geofeed-aggregated.csv"
-    generated_at = datetime(2024, 1, 15, 5, 30, 0, tzinfo=timezone.utc)
+    eastern = timezone(timedelta(hours=-5))
+    generated_at = datetime(2024, 1, 15, 0, 30, 0, tzinfo=eastern)
 
     write_aggregated_geofeed([region_prefix("192.0.2.0/24", 3)], REGIONS, output, generated_at)
 
     first_line = output.read_text(encoding="utf-8").splitlines()[0]
-    assert first_line == (
-        "# Aggregated RFC8805 geofeed generated January 15 2024 - 00:30:00 "
-        "(Eastern Standard Time)"
-    )
+    assert first_line == "# Aggregated RFC8805 geofeed generated 2024-01-15T05:30:00+00:00"
 
 
 def test_write_aggregated_geofeed_keeps_ipv4_and_ipv6_separate_in_one_location(tmp_path):
@@ -333,6 +332,7 @@ def test_main_exports_resolved_prefixes_and_warns_about_unresolved(cli, capsys):
         region_prefix("192.0.2.0/25", 3),
         region_prefix("192.0.2.128/25", 3),
         region_prefix("198.51.100.0/24", 999),  # Region does not exist
+        region_prefix("203.0.113.0/24", 2),  # scoped to a province, not a city
     ]
     with patch.object(netbox_prefix_exporter, "fetch_prefixes", return_value=prefixes), \
             patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS):
@@ -342,11 +342,50 @@ def test_main_exports_resolved_prefixes_and_warns_about_unresolved(cli, capsys):
     assert rows == [["192.0.2.0/24", "CA", "CA-ON", "Toronto", ""]]
 
     captured = capsys.readouterr()
-    assert "198.51.100.0/24" in captured.err
-    assert "scope id 999" in captured.err
+    assert "skipped 198.51.100.0/24 with scope id 999:" in captured.err  # unknown Region: no name
+    assert "skipped 203.0.113.0/24 with scope id 2 (CA-ON):" in captured.err  # known: name shown
     assert "192.0.2.0/25" not in captured.err
     assert "Exported 1 aggregated prefixes from 2 source prefixes" in captured.out
-    assert "Skipped 1 prefixes with unresolved locations" in captured.out
+    # The count and advice are printed once, together, after the warnings.
+    assert captured.err.count("Skipped 2 prefixes with unresolved locations.") == 1
+    assert captured.err.count("Prefix Scope must be a city Region") == 1
+    assert captured.err.rstrip().endswith('see "Unresolved locations" in README.md')
+    assert captured.err.index("Warning:") < captured.err.index("Skipped 2 prefixes")
+    assert "Skipped" not in captured.out
+
+
+def test_report_unresolved_caps_listed_warnings_but_reports_true_total(capsys):
+    unresolved = [region_prefix(f"10.0.{number}.0/24", 999) for number in range(25)]
+
+    _report_unresolved(unresolved, REGIONS)
+
+    err = capsys.readouterr().err
+    assert err.count("Warning: skipped") == 20
+    assert "10.0.19.0/24" in err
+    assert "10.0.20.0/24" not in err
+    assert "... and 5 more skipped prefixes not listed here." in err
+    assert "Skipped 25 prefixes with unresolved locations." in err
+    assert err.count("Prefix Scope must be a city Region") == 1
+
+
+def test_report_unresolved_prints_nothing_when_nothing_was_skipped(capsys):
+    _report_unresolved([], REGIONS)
+
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+def test_main_prints_no_warnings_or_advice_when_everything_resolves(cli, capsys):
+    with patch.object(
+        netbox_prefix_exporter,
+        "fetch_prefixes",
+        return_value=[region_prefix("192.0.2.0/24", 3)],
+    ), patch.object(netbox_prefix_exporter, "fetch_regions", return_value=REGIONS):
+        assert main() == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Skipped" not in captured.out
 
 
 def test_main_passes_tag_and_blocklist_from_environment(cli, monkeypatch):

@@ -7,7 +7,6 @@ from pathlib import Path
 import sys
 from typing import Any
 from urllib.parse import urljoin
-from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -16,17 +15,12 @@ from urllib3.util.retry import Retry
 
 
 REGION_SCOPE_TYPE = "dcim.region"
-EASTERN_TIME = ZoneInfo("America/New_York")
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
-# Month names are spelled out here instead of using "%B" because "%B" changes
-# with the system locale, and the geofeed header should always be in English.
-MONTH_NAMES = (
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-)
-# Keyed by whether daylight saving time is in effect.
-ZONE_NAMES = {True: "Eastern Daylight Time", False: "Eastern Standard Time"}
+# Largest number of per-prefix warnings to print. A bad Region assignment can
+# affect hundreds of prefixes, and a wall of warnings is easy to ignore. The
+# summary count always shows the true total.
+MAX_LISTED_WARNINGS = 20
 
 # Retry transient server errors so one hiccup does not abort a long paginated
 # download. Only GET requests are retried (this script never writes to NetBox).
@@ -39,11 +33,10 @@ RETRY_POLICY = Retry(
 
 
 def _write_geofeed_header(csv_file: Any, purpose: str, generated_at: datetime) -> csv.writer:
-    local = generated_at.astimezone(EASTERN_TIME)
-    zone = ZONE_NAMES[bool(local.dst())]
-    month = MONTH_NAMES[local.month - 1]
+    # RFC 3339 timestamp in UTC, e.g. 2024-08-30T04:18:56+00:00
+    timestamp = generated_at.astimezone(timezone.utc).isoformat(timespec="seconds")
     csv_file.write(
-        f"# {purpose} generated {month} {local.day} {local:%Y - %H:%M:%S} ({zone})\n"
+        f"# {purpose} generated {timestamp}\n"
         "# ip_prefix,alpha2code,region,city,postal_code\n"
     )
     return csv.writer(csv_file, lineterminator="\n")
@@ -229,14 +222,52 @@ def write_aggregated_geofeed(
     return len(rows)
 
 
-def _report_unresolved(unresolved: list[dict[str, Any]]) -> None:
-    """Print one warning per skipped prefix so problems can be fixed in NetBox."""
-    for prefix in unresolved:
+def _describe_scope(prefix: dict[str, Any], regions_by_id: dict[str, dict[str, Any]]) -> str:
+    """Return e.g. "scope id 2 (CA-AB)", or just "scope id 2" if the Region is unknown."""
+    scope_id = prefix.get("scope_id")
+    region = regions_by_id.get(str(scope_id)) if scope_id is not None else None
+    if region and region.get("name"):
+        return f"scope id {scope_id} ({region['name']})"
+    return f"scope id {scope_id}"
+
+
+def _report_unresolved(
+    unresolved: list[dict[str, Any]],
+    regions: list[dict[str, Any]],
+) -> None:
+    """Report skipped prefixes: warnings (up to a limit), then a count and advice.
+
+    Everything is printed to stderr, in one block, so the messages stay together.
+    """
+    if not unresolved:
+        return
+
+    regions_by_id = _region_index(regions)
+    for prefix in unresolved[:MAX_LISTED_WARNINGS]:
+        scope = _describe_scope(prefix, regions_by_id)
         print(
-            f"Warning: skipped {prefix.get('prefix')} (scope id {prefix.get('scope_id')}): "
-            "its Region, or a parent Region, could not be resolved",
+            f"Warning: skipped {prefix.get('prefix')} with {scope}: "
+            "its Region, or a parent Region, could not be resolved.",
             file=sys.stderr,
         )
+
+    not_listed = len(unresolved) - MAX_LISTED_WARNINGS
+    if not_listed > 0:
+        print(
+            f"... and {not_listed} more skipped prefixes not listed here. "
+            "Fix the ones above and run again to see the rest.",
+            file=sys.stderr,
+        )
+
+    print(
+        f"Skipped {len(unresolved)} prefixes with unresolved locations.",
+        file=sys.stderr,
+    )
+    print(
+        "Prefix Scope must be a city Region whose parent is a province/state and "
+        "whose grandparent is a country -- see \"Unresolved locations\" in README.md",
+        file=sys.stderr,
+    )
 
 
 def main() -> int:
@@ -281,16 +312,11 @@ def main() -> int:
     except (KeyError, ValueError) as error:
         parser.error(f"Could not create geofeed: {error}")
     else:
-        _report_unresolved(unresolved)
+        _report_unresolved(unresolved, regions)
         print(
             f"Exported {exported_count} aggregated prefixes "
             f"from {len(located)} source prefixes to {args.output}"
         )
-        if unresolved:
-            print(
-                f"Skipped {len(unresolved)} prefixes with unresolved locations "
-                "(see warnings above)"
-            )
     return 0
 
 

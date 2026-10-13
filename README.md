@@ -107,12 +107,12 @@ The CSV begins with a generated-time comment and a field-definition comment,
 followed by aggregated rows. Example output (timestamp shown for illustration):
 
 ```text
-# Aggregated RFC8805 geofeed generated October 1 2026 - 00:18:56 (Eastern Daylight Time)
+# Aggregated RFC8805 geofeed generated 2026-10-01T04:18:56+00:00
 # ip_prefix,alpha2code,region,city,postal_code
 192.0.2.0/24,CA,CA-ON,Toronto,
 ```
 
-The header always uses English month names, regardless of the system locale.
+The timestamp is in UTC and follows RFC 3339.
 
 Adjacent IPv4 or IPv6 networks are aggregated only when their country, region,
 and city fields are identical. Networks with different locations are not
@@ -121,14 +121,35 @@ merged.
 ### Unresolved locations
 
 A prefix is skipped when its country, region, or city cannot be determined,
-for example when its Scope Region has no parent Region. The exporter prints one
-warning per skipped prefix to standard error and a summary line at the end:
+for example when its Scope Region has no parent Region. The exporter prints
+one block to standard error: a warning per skipped prefix, a count, and a line
+of advice:
 
 ```text
-Warning: skipped 198.51.100.0/24 (scope id 12): its Region, or a parent Region, could not be resolved
+Warning: skipped 198.51.100.0/24 with scope id 12 (CA-PE): its Region, or a parent Region, could not be resolved.
+Skipped 1 prefixes with unresolved locations.
+Prefix Scope must be a city Region whose parent is a province/state and whose grandparent is a country -- see "Unresolved locations" in README.md
 Exported 41 aggregated prefixes from 57 source prefixes to geofeed-aggregated.csv
-Skipped 1 prefixes with unresolved locations (see warnings above)
 ```
+
+Each warning shows the prefix, the NetBox ID of its Scope Region, and that
+Region's name in parentheses, so you can see at a glance which Region to fix
+(here, a province-level Region used where a city is expected). The name is
+omitted if the Region could not be found at all.
+
+At most 20 warnings are listed. If more prefixes were skipped, a line says how
+many were left out; the count line always shows the true total. Fix the
+listed prefixes and run the exporter again to see the rest. The advice line
+is printed once, however many prefixes were skipped, and nothing is printed
+when no prefixes are skipped.
+
+Common causes:
+
+- The Scope is set to a province/state or country Region instead of a city.
+- A level is missing from the hierarchy (for example, a city placed directly
+  under the country).
+- The API token's permissions do not allow viewing every Region, so the
+  prefix points at a Region the exporter never received.
 
 To fix a skipped prefix, correct the Region hierarchy or the Prefix's Scope in
 NetBox and run the exporter again. The exit status is still 0 when prefixes are
