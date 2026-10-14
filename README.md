@@ -72,7 +72,7 @@ tag.
 
 Consider the following:
 
-![](image.png)
+![](images/image.png)
 
 If a tag is set, **only** the Prefixes which are both Region-Scoped **and** tagged (the purple intersection of the diagram) are kept.
 
