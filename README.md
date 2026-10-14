@@ -1,9 +1,6 @@
 # Netbox RFC8805 Prefix Generator
 
-Export Netbox IPAM prefixes to an [RFC8805](https://www.rfc-editor.org/rfc/rfc8805.txt)-compliant geofeed CSV file.
-
-The exporter is read-only: it only sends GET requests to NetBox and never
-writes to it.
+Read-only utility to export Netbox IPAM prefixes to an [RFC8805](https://www.rfc-editor.org/rfc/rfc8805.txt)-compliant geofeed CSV file.
 
 ## Requirements
 
@@ -11,10 +8,10 @@ writes to it.
 - NetBox 4.2 or later
 - A NetBox API token with permission to view IPAM prefixes and DCIM Regions
 - Python packages listed in `requirements.txt`
-- Use the [ISO Online Browsing Platform](https://www.iso.org/obp/ui/) as the
+- Use of the [ISO Online Browsing Platform](https://www.iso.org/obp/ui/) as the
   source for country and subdivision codes.
 
-Create NetBox Regions in a three-level hierarchy with these layers:
+NetBox Regions must be defined in a three-level hierarchy with the following structure:
 
 - **Country:** the top layer, represented by the two-letter ISO 3166-1
   alpha-2 code (for example, `CA` for Canada).
@@ -41,11 +38,14 @@ Regions
 Within Netbox, set each relevant Prefix's **Scope** to its city Region. The exporter follows
 that city's parent hierarchy to populate the corresponding geofeed fields.
 
-Ex: Assume `192.0.2.0/29` is assigned to Charlottetown. Its Scope should be set to the `Charlottetown` Region. The script will derive the relevant province/state and country codes.
+Ex: Assume `192.0.2.0/29` is assigned to Charlottetown. Its Scope should be set to the `Charlottetown` Region. The script will derive the relevant province/state (CA-PE) and country codes (CA) from the Region hierarchy.
 
-If the Scope Region cannot be resolved, or a parent Region is missing (so the
-country, region, or city would be blank), the prefix is **skipped** and a
-warning is printed. See [Unresolved locations](#unresolved-locations).
+Note the following behaviours:
+
+* If a Prefix has **no** Scope set, the Prefix is silently skipped.
+* If the Scope Region cannot be resolved, or a parent Region is missing, the prefix is **skipped** and a
+warning is printed.
+    * See [Unresolved locations](#unresolved-locations).
 
 ## Setup
 
@@ -66,31 +66,33 @@ NETBOX_TAG=
 NETBOX_PREFIX_BLOCKLIST=10.0.0.0/8,100.64.0.0/10,172.16.0.0/12,192.168.0.0/16,2001:db8::/32
 ```
 
-`NETBOX_TAG` is optional. Leave it empty to consider all Region-scoped
+`NETBOX_TAG` is optional and defaults to empty. Leave empty to consider all Region-scoped
 prefixes, or set it to one NetBox tag slug to include only Region-scoped prefixes with that
 tag.
 
+Consider the following:
+
+![](image.png)
+
+If a tag is set, **only** the Prefixes which are both Region-Scoped **and** tagged (the purple intersection of the diagram) are kept.
+
 🚨Use of this tag is very disruptive.🚨 Ensure all desired prefixes are correctly tagged, or they will no longer be included in the geofeed.
 
-`NETBOX_PREFIX_BLOCKLIST` is optional. Enter comma-separated IP prefixes to
-exclude; the example lists RFC 1918 private IPv4 ranges, RFC 6598 shared-address block, and the RFC 3849 IPv6
-documentation range. If a blocklist overlaps only part of a
+`NETBOX_PREFIX_BLOCKLIST` is optional and defaults to empty. Leave empty to disable exclusives, or enter comma-separated IP prefixes to
+exclude.
+
+If a blocklist overlaps only part of a
 NetBox prefix, the exporter removes that address range and exports the
-remaining CIDR pieces with the original location. Leave the value empty to
-disable exclusions.
+remaining CIDR pieces with the original location.
 
 If any blocklist entry is not a valid IP prefix, the exporter stops before
 contacting NetBox and names the offending entry, for example:
 `Invalid entry '10.0.0.0/33' in NETBOX_PREFIX_BLOCKLIST: ...`.
 
-The exporter fetches only prefixes whose Scope type is Region (`dcim.region`),
+The exporter fetches **only** prefixes whose Scope type is Region (`dcim.region`),
 and, if `NETBOX_TAG` is set, only those with the configured tag. Prefixes whose
-location cannot be fully resolved are then skipped (see below), and the
-blacklist is applied to the rest. Prefixes without a Region Scope or
-without the configured tag are excluded. If a blacklisted prefix is contained
-within a less-specific NetBox prefix, the exporter splits the less-specific
-prefix into CIDR ranges that exclude the blocked addresses. Those remaining
-ranges retain the location of the less-specific prefix.
+location cannot be fully resolved are then skipped, and the
+blacklist is applied to the rest.
 
 Transient NetBox server errors (HTTP 502, 503, and 504) are retried up to three
 times with a short backoff, so a brief hiccup does not abort a multi-page
@@ -105,16 +107,14 @@ Use `--output` to choose a different path, ex:
 
 ```./netbox_prefix_exporter.py --output ./foo/bar/my_feed.csv```
 
-The CSV begins with a generated-time comment and a field-definition comment,
-followed by aggregated rows. Example output (timestamp shown for illustration):
+The CSV begins with an RFC 3339 generated-time comment and a field-definition comment,
+followed by the set of aggregated prefixes. Example output:
 
 ```text
-# Aggregated RFC8805 geofeed generated 2026-10-01T04:18:56+00:00
+# RFC8805 geofeed generated 2026-10-01T04:18:56+00:00
 # ip_prefix,alpha2code,region,city,postal_code
 192.0.2.0/24,CA,CA-ON,Toronto,
 ```
-
-The timestamp is in UTC and follows RFC 3339.
 
 Adjacent IPv4 or IPv6 networks are aggregated only when their country, region,
 and city fields are identical. Networks with different locations are not
@@ -138,12 +138,6 @@ Each warning shows the prefix, the NetBox ID of its Scope Region, and that
 Region's name in parentheses, so you can see at a glance which Region to fix
 (here, a province-level Region used where a city is expected). The name is
 omitted if the Region could not be found at all.
-
-At most 20 warnings are listed. If more prefixes were skipped, a line says how
-many were left out; the count line always shows the true total. Fix the
-listed prefixes and run the exporter again to see the rest. The advice line
-is printed once, however many prefixes were skipped, and nothing is printed
-when no prefixes are skipped.
 
 Common causes:
 
@@ -170,8 +164,6 @@ python -m pytest
 The tests mock all NetBox HTTP responses; they never contact a live NetBox.
 
 ## Notes & Suggestions
-
-Prefixes without a Region Scope are excluded by the NetBox API filter and will not appear in the CSV.
 
 Before publishing the feed for ingestion by external parties, the generated CSV should be validated. An example validator is [geofeed-validator](https://github.com/massimocandela/geofeed-validator/releases/).
 Download the release binary for your operating system and run it against the

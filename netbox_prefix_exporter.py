@@ -22,11 +22,6 @@ RegionIndex = dict[int, Record]  # every Region, keyed by its NetBox ID
 Location = tuple[str, str, str]  # (country, region, city)
 LocatedNetwork = tuple[IPNetwork, Location]
 
-# Largest number of per-prefix warnings to print. A bad Region assignment can
-# affect hundreds of prefixes, and a wall of warnings is easy to ignore. The
-# summary count always shows the true total.
-MAX_LISTED_WARNINGS = 20
-
 # Retry transient server errors so one hiccup does not abort a long paginated
 # download. Only GET requests are retried (this script never writes to NetBox).
 RETRY_POLICY = Retry(
@@ -201,7 +196,7 @@ def write_aggregated_geofeed(
     timestamp = generated_at.astimezone(timezone.utc).isoformat(timespec="seconds")
     with output_path.open("w", newline="", encoding="utf-8") as csv_file:
         csv_file.write(
-            f"# Aggregated RFC8805 geofeed generated {timestamp}\n"
+            f"# RFC8805 geofeed generated {timestamp}\n"
             "# ip_prefix,alpha2code,region,city,postal_code\n"
         )
         writer = csv.writer(csv_file, lineterminator="\n")
@@ -220,26 +215,16 @@ def _describe_scope(prefix: Record, regions_by_id: RegionIndex) -> str:
 
 
 def _report_unresolved(unresolved: list[Record], regions_by_id: RegionIndex) -> None:
-    """Report skipped prefixes: warnings (up to a limit), then a count and advice.
-
-    Everything is printed to stderr, in one block, so the messages stay together.
+    """Report every skipped prefix, followed by a count and advice.
     """
     if not unresolved:
         return
 
-    for prefix in unresolved[:MAX_LISTED_WARNINGS]:
+    for prefix in unresolved:
         scope = _describe_scope(prefix, regions_by_id)
         print(
             f"Warning: skipped {prefix.get('prefix')} with {scope}: "
             "its Region, or a parent Region, could not be resolved.",
-            file=sys.stderr,
-        )
-
-    not_listed = len(unresolved) - MAX_LISTED_WARNINGS
-    if not_listed > 0:
-        print(
-            f"... and {not_listed} more skipped prefixes not listed here. "
-            "Fix the ones above and run again to see the rest.",
             file=sys.stderr,
         )
 

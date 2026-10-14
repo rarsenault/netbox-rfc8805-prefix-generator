@@ -279,7 +279,7 @@ def test_write_aggregated_geofeed_collapses_only_matching_locations(tmp_path):
     rows = list(csv.reader(lines[2:]))
 
     assert lines[:2] == [
-        "# Aggregated RFC8805 geofeed generated 2024-08-30T04:18:56+00:00",
+        "# RFC8805 geofeed generated 2024-08-30T04:18:56+00:00",
         "# ip_prefix,alpha2code,region,city,postal_code",
     ]
     assert rows == [
@@ -299,7 +299,7 @@ def test_write_aggregated_geofeed_header_converts_timestamp_to_utc(tmp_path):
     write_feed([region_prefix("192.0.2.0/24", 3)], output, generated_at=generated_at)
 
     first_line = output.read_text(encoding="utf-8").splitlines()[0]
-    assert first_line == "# Aggregated RFC8805 geofeed generated 2024-01-15T05:30:00+00:00"
+    assert first_line == "# RFC8805 geofeed generated 2024-01-15T05:30:00+00:00"
 
 
 def test_write_aggregated_geofeed_defaults_to_current_time(tmp_path):
@@ -362,16 +362,17 @@ def test_write_aggregated_geofeed_subtracts_blacklisted_address_ranges(tmp_path)
 # --- Reporting ------------------------------------------------------------
 
 
-def test_report_unresolved_caps_listed_warnings_but_reports_true_total(capsys):
+def test_report_unresolved_lists_every_warning_and_reports_true_total(capsys):
     unresolved = [region_prefix(f"10.0.{number}.0/24", 999) for number in range(25)]
 
     _report_unresolved(unresolved, REGIONS_BY_ID)
 
     err = capsys.readouterr().err
-    assert err.count("Warning: skipped") == 20
+    assert err.count("Warning: skipped") == 25
     assert "10.0.19.0/24" in err
-    assert "10.0.20.0/24" not in err
-    assert "... and 5 more skipped prefixes not listed here." in err
+    assert "10.0.20.0/24" in err
+    assert "10.0.24.0/24" in err
+    assert "more skipped prefixes not listed" not in err
     assert "Skipped 25 prefixes with unresolved locations." in err
     assert err.count("Prefix Scope must be a city Region") == 1
 
